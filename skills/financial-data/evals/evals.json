@@ -1,0 +1,40 @@
+{
+  "skill_name": "financial-data",
+  "evals": [
+    {
+      "id": 0,
+      "name": "quick-market-snapshot",
+      "prompt": "看看今天全球市场怎么样，主要指数、大宗商品、美元指数给我简单列一下",
+      "expected_output": "Agent should call fetch_market.py (snapshot mode) and summarize indices (S&P/纳指/恒生/上证), commodities (黄金/原油), FX (美元指数) with ▲/▼ changes. Should NOT fabricate numbers.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "nvda-deep-dive",
+      "prompt": "Tell me everything you can about NVDA right now — price, valuation, what analysts think, recent news, and whether it's technically overbought.",
+      "expected_output": "Agent should call fetch_market.py --mode detail --symbols NVDA --include analyst,technicals,news (or include all). Output should mention current price, P/E, target price range, RSI value with interpretation, and at least one recent headline with source.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "a-share-fund-flow",
+      "prompt": "帮我看看贵州茅台最近的主力资金流向，以及股价走势",
+      "expected_output": "Agent should recognize 贵州茅台 = 600519.SS, call fetch_market.py --mode detail --symbols 600519.SS --include flow. Should report 主力净流入 numbers and recent price action. Should NOT confuse with other stocks.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "daily-digest-intl",
+      "prompt": "Compile a brief daily market digest for a global macro investor. Include top-3 movers among major indices, 3-5 international financial headlines, and any relevant commodity/FX action. Markdown format.",
+      "expected_output": "Agent should call both fetch_market.py (snapshot) and fetch_news.py --sources intl. Output should be markdown with headings (Markets / Headlines / Commodities or FX). Headlines should include source attribution.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "crypto-and-fear-greed",
+      "prompt": "How's crypto doing today? BTC, ETH, and where is the fear and greed index sitting?",
+      "expected_output": "Agent should call fetch_market.py --mode crypto. Output should include BTC + ETH prices with 24h change and Fear & Greed index value + classification (e.g. 'Greed', 'Fear'). Should NOT fabricate numbers if the call fails.",
+      "files": []
+    }
+  ]
+}

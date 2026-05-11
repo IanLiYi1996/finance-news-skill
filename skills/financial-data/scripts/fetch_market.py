@@ -29,7 +29,7 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def require(pkg):
@@ -82,7 +82,11 @@ SNAPSHOT_SYMBOLS = {
 def snapshot_mode(output_json=False):
     yf = require("yfinance")
     all_symbols = [s for group in SNAPSHOT_SYMBOLS.values() for s in group]
-    data = yf.download(all_symbols, period="2d", progress=False, auto_adjust=True)
+    # Use 7 calendar days rather than 2: weekends + holidays can leave futures
+    # and some FX pairs with only 1 bar in a 2-day window, which drops them
+    # from the output entirely. 7d guarantees ≥2 trading bars across all
+    # market schedules.
+    data = yf.download(all_symbols, period="7d", progress=False, auto_adjust=True)
 
     results = {}
     for category, symbols in SNAPSHOT_SYMBOLS.items():
@@ -90,9 +94,19 @@ def snapshot_mode(output_json=False):
         for sym, name in symbols.items():
             try:
                 closes = data["Close"][sym].dropna()
-                if len(closes) < 2:
+                if len(closes) == 0:
                     continue
                 price = float(closes.iloc[-1])
+                # Some instruments (futures/FX) may only have 1 bar over a
+                # holiday weekend. Show price, mark change as unavailable
+                # rather than dropping the row entirely.
+                if len(closes) < 2:
+                    results[category][name] = {
+                        "symbol": sym,
+                        "price":  round(price, 4),
+                        "change_pct": None,
+                    }
+                    continue
                 prev  = float(closes.iloc[-2])
                 chg   = (price - prev) / prev * 100
                 results[category][name] = {
@@ -108,13 +122,17 @@ def snapshot_mode(output_json=False):
         return
 
     print(f"\n{'='*55}")
-    print(f"全球市场快照 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
+    print(f"全球市场快照 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC")
     print(f"{'='*55}")
     for category, items in results.items():
         print(f"\n【{category}】")
         for name, d in items.items():
-            arrow = "▲" if d["change_pct"] >= 0 else "▼"
-            print(f"  {name:<18} {d['price']:>12,.3f}   {arrow}{abs(d['change_pct']):.2f}%")
+            chg = d["change_pct"]
+            if chg is None:
+                print(f"  {name:<18} {d['price']:>12,.3f}   (no prior close)")
+            else:
+                arrow = "▲" if chg >= 0 else "▼"
+                print(f"  {name:<18} {d['price']:>12,.3f}   {arrow}{abs(chg):.2f}%")
 
 
 # ── 详情模式 ──────────────────────────────────────────────
@@ -140,8 +158,25 @@ def _a_share_code(sym: str) -> str:
 
 
 def _bundle_financials(ticker) -> dict:
-    """yfinance 季度 income statement + cash flow 的最近两期。"""
+    """季度 income statement + cash flow 的最近两期，加上 TTM 指标。"""
     out = {}
+    info = ticker.info or {}
+    # TTM / YoY 增速（info 字段，"免费" — 不用再拉 statement）
+    ttm = {}
+    for label, key in [
+        ("revenue_ttm",       "totalRevenue"),
+        ("gross_margin",      "grossMargins"),
+        ("operating_margin",  "operatingMargins"),
+        ("earnings_growth_yoy","earningsGrowth"),
+        ("revenue_growth_yoy","revenueGrowth"),
+        ("total_cash",        "totalCash"),
+        ("total_debt",        "totalDebt"),
+    ]:
+        if info.get(key) is not None:
+            ttm[label] = info[key]
+    if ttm:
+        out["ttm"] = ttm
+
     try:
         inc = ticker.quarterly_income_stmt
         if inc is not None and not inc.empty:
@@ -201,9 +236,9 @@ def _bundle_news(ticker, limit: int = 5) -> list:
 
 
 def _bundle_technicals(ticker) -> dict:
-    """用 3 个月历史算简单技术指标 — 无需额外依赖。"""
+    """用 1 年历史算技术指标 — 涵盖 MA200、MACD、Bollinger。"""
     try:
-        hist = ticker.history(period="3mo")
+        hist = ticker.history(period="1y")
         closes = hist["Close"].dropna()
         volumes = hist["Volume"].dropna()
         if len(closes) < 20:
@@ -212,19 +247,48 @@ def _bundle_technicals(ticker) -> dict:
         def _ma(n):
             return round(float(closes.tail(n).mean()), 4) if len(closes) >= n else None
 
-        # RSI(14)
+        # Wilder's RSI(14) — use EWMA of gains/losses, the standard.
         diff = closes.diff().dropna()
-        gains = diff.clip(lower=0).tail(14).mean()
-        losses = (-diff.clip(upper=0)).tail(14).mean()
-        rsi = 100 - 100 / (1 + gains / losses) if losses else 100.0
+        gains = diff.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+        losses = (-diff.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+        last_gain, last_loss = float(gains.iloc[-1]), float(losses.iloc[-1])
+        rsi = 100.0 if last_loss == 0 else 100 - 100 / (1 + last_gain / last_loss)
+
+        # MACD (12/26/9)
+        macd_out = None
+        if len(closes) >= 26:
+            ema12 = closes.ewm(span=12, adjust=False).mean()
+            ema26 = closes.ewm(span=26, adjust=False).mean()
+            macd = ema12 - ema26
+            signal = macd.ewm(span=9, adjust=False).mean()
+            macd_out = {
+                "macd":      round(float(macd.iloc[-1]), 4),
+                "signal":    round(float(signal.iloc[-1]), 4),
+                "histogram": round(float((macd - signal).iloc[-1]), 4),
+            }
+
+        # Bollinger Bands (20, 2σ)
+        bb = None
+        if len(closes) >= 20:
+            window = closes.tail(20)
+            mid = window.mean()
+            sd  = window.std()
+            bb = {
+                "upper":  round(float(mid + 2 * sd), 4),
+                "middle": round(float(mid), 4),
+                "lower":  round(float(mid - 2 * sd), 4),
+            }
 
         return {
+            "last_close":      round(float(closes.iloc[-1]), 4),
             "ma5":  _ma(5),
             "ma20": _ma(20),
             "ma50": _ma(50),
+            "ma200": _ma(200),
             "rsi14":           round(float(rsi), 2),
+            "macd":            macd_out,
+            "bollinger_20_2": bb,
             "avg_volume_20d":  int(volumes.tail(20).mean()),
-            "last_close":      round(float(closes.iloc[-1]), 4),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -286,6 +350,13 @@ def detail_mode(symbols: list[str], include: set[str], output_json=False):
             "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
             "market_cap":    info.get("marketCap"),
             "pe_ratio":      info.get("trailingPE"),
+            "forward_pe":    info.get("forwardPE"),
+            "peg_ratio":     info.get("trailingPegRatio") or info.get("pegRatio"),
+            "profit_margin": info.get("profitMargins"),
+            "roe":           info.get("returnOnEquity"),
+            "revenue_growth": info.get("revenueGrowth"),
+            "free_cash_flow": info.get("freeCashflow"),
+            "beta":          info.get("beta"),
             "52w_high":      info.get("fiftyTwoWeekHigh"),
             "52w_low":       info.get("fiftyTwoWeekLow"),
             "volume":        info.get("volume"),
@@ -303,11 +374,18 @@ def detail_mode(symbols: list[str], include: set[str], output_json=False):
         print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
         return
 
+    def _pct(x):
+        return f"{x*100:.2f}%" if isinstance(x, (int, float)) else "N/A"
+
     for sym, d in results.items():
         print(f"\n[{sym}] {d['name']} ({d['currency']})")
         print(f"  当前价:    {d['current_price']}")
         print(f"  市值:      {d['market_cap']:,}" if d['market_cap'] else "  市值:      N/A")
-        print(f"  P/E:       {d['pe_ratio']}")
+        print(f"  P/E:       trailing {d['pe_ratio']} | forward {d['forward_pe']} | PEG {d['peg_ratio']}")
+        print(f"  利润率:    净利率 {_pct(d['profit_margin'])} | ROE {_pct(d['roe'])} | 营收增速 {_pct(d['revenue_growth'])}")
+        if d.get("free_cash_flow"):
+            print(f"  自由现金流: {d['free_cash_flow']:,}")
+        print(f"  Beta:      {d['beta']}")
         print(f"  52周高/低: {d['52w_high']} / {d['52w_low']}")
         print(f"  近5日收盘: {d['recent_closes']}")
 
@@ -327,7 +405,15 @@ def detail_mode(symbols: list[str], include: set[str], output_json=False):
 
         if "financials" in d:
             f = d["financials"]
-            print(f"\n  ── 财务（季度） ──")
+            print(f"\n  ── 财务 ──")
+            if "ttm" in f:
+                ttm = f["ttm"]
+                if "revenue_ttm" in ttm: print(f"  TTM 营收:   {ttm['revenue_ttm']:,}")
+                print(f"  毛利率:     {_pct(ttm.get('gross_margin'))}  |  营业利润率: {_pct(ttm.get('operating_margin'))}")
+                print(f"  营收 YoY:   {_pct(ttm.get('revenue_growth_yoy'))}  |  盈利 YoY: {_pct(ttm.get('earnings_growth_yoy'))}")
+                if "total_cash" in ttm and "total_debt" in ttm:
+                    net = ttm["total_cash"] - ttm["total_debt"]
+                    print(f"  现金/负债:  {ttm['total_cash']:,} / {ttm['total_debt']:,}  净现金 {net:,}")
             for k in ("revenue", "net_income", "operating_cash_flow"):
                 if k in f:
                     print(f"  {k:20s} {f[k]}")
@@ -338,8 +424,17 @@ def detail_mode(symbols: list[str], include: set[str], output_json=False):
                 print(f"\n  ── 技术指标 ──  ERROR: {t['error']}")
             else:
                 print(f"\n  ── 技术指标 ──")
-                print(f"  MA5/20/50: {t['ma5']} / {t['ma20']} / {t['ma50']}")
-                print(f"  RSI(14):   {t['rsi14']}")
+                print(f"  MA5/20/50/200: {t['ma5']} / {t['ma20']} / {t['ma50']} / {t['ma200']}")
+                rsi = t["rsi14"]
+                tag = "超买 (>70)" if rsi > 70 else "超卖 (<30)" if rsi < 30 else "中性"
+                print(f"  RSI(14):   {rsi}  ({tag})")
+                if t.get("macd"):
+                    m = t["macd"]
+                    trend = "多头" if m["histogram"] > 0 else "空头"
+                    print(f"  MACD:      {m['macd']} / signal {m['signal']} / hist {m['histogram']}  ({trend})")
+                if t.get("bollinger_20_2"):
+                    b = t["bollinger_20_2"]
+                    print(f"  Bollinger: {b['lower']} – {b['middle']} – {b['upper']}")
                 print(f"  20日均量:  {t['avg_volume_20d']:,}")
 
         if "flow" in d:
@@ -395,7 +490,7 @@ def macro_mode(output_json=False):
         return
 
     print(f"\n{'='*55}")
-    print(f"宏观经济指标 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
+    print(f"宏观经济指标 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC")
     print(f"{'='*55}")
     for name, d in results.items():
         if "error" in d:
@@ -435,7 +530,7 @@ def crypto_mode(output_json=False):
         return
 
     print(f"\n{'='*55}")
-    print(f"加密货币行情 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
+    print(f"加密货币行情 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC")
     print(f"{'='*55}")
     names = {"bitcoin": "比特币", "ethereum": "以太坊",
              "solana": "Solana", "bnb": "BNB", "xrp": "XRP"}

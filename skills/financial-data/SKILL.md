@@ -48,13 +48,15 @@ Use these when the user wants more than just price and market cap. Bundles combi
 |--------|----------|-------|
 | `analyst` | Rating + number of analysts + mean / low / high target price | yfinance |
 | `dividends` | Dividend yield + payout ratio + last 5 dividend payments | yfinance |
-| `financials` | Quarterly revenue / net income / operating cash flow (last 2 quarters) | yfinance |
+| `financials` | TTM revenue, gross / operating margin, YoY revenue & earnings growth, cash & debt, plus quarterly revenue / net income / operating cash flow (last 2) | yfinance |
 | `news` | Last 5 ticker-specific news stories (title + URL) | yfinance |
-| `technicals` | MA5/20/50 + RSI(14) + 20-day avg volume | yfinance |
+| `technicals` | MA5/20/50/200 + Wilder RSI(14) with 超买/超卖 tag + MACD(12/26/9) + Bollinger(20, 2σ) + 20-day avg volume | yfinance |
 | `flow` | Latest 主力/超大单/大单/中单/小单 net flow + recent notices | akshare; auto-skips non-A-share |
 | `all` | Everything above | both |
 
 Pick the smallest set that answers the user's question. Loading `all` on 10 symbols is slow — only do that when they explicitly want a deep dive.
+
+**Default `--mode detail` output** (no `--include`) already covers most "how's this stock?" questions: price, market cap, trailing P/E, **forward P/E, PEG, net margin, ROE, revenue growth, free cash flow, beta**, 52-week range, last 5 closes. Reach for `--include` only when the user wants statements, dividends, analyst spreads, news, technicals, or A-share fund flow.
 
 ### `scripts/fetch_market.py` — market data
 
