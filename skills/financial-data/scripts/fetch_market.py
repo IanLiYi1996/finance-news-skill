@@ -3,16 +3,26 @@
 fetch_market.py — 市场数据批量抓取脚本
 
 用法：
-  python3 fetch_market.py [--mode snapshot|detail|macro] [--symbols AAPL MSFT ...]
+  python3 fetch_market.py [--mode snapshot|detail|macro|crypto] [--symbols AAPL MSFT ...]
+                          [--include financials,dividends,analyst,news,technicals,flow]
 
 依赖：
   pip install yfinance akshare
 
 模式：
   snapshot  — 全球主要指数 + 大宗商品 + 外汇快照（默认）
-  detail    — 指定 symbol 的详细数据（用 --symbols 传入）
+  detail    — 指定 symbol 的详细数据（--symbols 必填，--include 可选补充）
   macro     — 中美宏观经济指标
-  crypto    — 加密货币行情（不需要 yfinance）
+  crypto    — 加密货币行情（无需 yfinance）
+
+--include bundles（仅 detail 模式）：
+  financials  — 季度营收/利润/经营现金流
+  dividends   — 分红历史 + 股息率
+  analyst     — 分析师评级 + 目标价
+  news        — 个股相关新闻
+  technicals  — MA/RSI/成交量技术指标
+  flow        — A股主力资金流向 + 公告（自动按 .SS/.SZ/.BJ 判定）
+  all         — 全部加载
 """
 
 import argparse
@@ -109,14 +119,168 @@ def snapshot_mode(output_json=False):
 
 # ── 详情模式 ──────────────────────────────────────────────
 
-def detail_mode(symbols: list[str], output_json=False):
+# 可用的 --include bundles（仅当用户明确要求时才加载，避免默认输出过长）
+DETAIL_BUNDLES = {
+    "financials": "营收 / 净利润 / 经营现金流（近 2 期）",
+    "dividends":  "分红历史 + 股息率",
+    "analyst":    "分析师评级 + 平均目标价",
+    "news":       "个股相关新闻（近 5 条）",
+    "technicals": "5/20/50 日均线 + RSI(14) + 平均成交量",
+    "flow":       "A 股主力资金流向（仅 .SS/.SZ/.BJ）",
+}
+
+
+def _is_a_share(sym: str) -> bool:
+    return sym.upper().endswith((".SS", ".SZ", ".BJ"))
+
+
+def _a_share_code(sym: str) -> str:
+    """AAPL -> AAPL；600519.SS -> 600519"""
+    return sym.split(".", 1)[0]
+
+
+def _bundle_financials(ticker) -> dict:
+    """yfinance 季度 income statement + cash flow 的最近两期。"""
+    out = {}
+    try:
+        inc = ticker.quarterly_income_stmt
+        if inc is not None and not inc.empty:
+            out["revenue"] = {str(c.date()): _num(inc.loc["Total Revenue", c])
+                              for c in inc.columns[:2] if "Total Revenue" in inc.index}
+            out["net_income"] = {str(c.date()): _num(inc.loc["Net Income", c])
+                                 for c in inc.columns[:2] if "Net Income" in inc.index}
+    except Exception as e:
+        out["income_error"] = str(e)
+    try:
+        cf = ticker.quarterly_cashflow
+        if cf is not None and not cf.empty and "Operating Cash Flow" in cf.index:
+            out["operating_cash_flow"] = {str(c.date()): _num(cf.loc["Operating Cash Flow", c])
+                                          for c in cf.columns[:2]}
+    except Exception as e:
+        out["cashflow_error"] = str(e)
+    return out
+
+
+def _bundle_dividends(ticker, info: dict) -> dict:
+    out = {"dividend_yield": info.get("dividendYield"),
+           "payout_ratio":   info.get("payoutRatio")}
+    try:
+        divs = ticker.dividends
+        if divs is not None and len(divs) > 0:
+            out["recent_dividends"] = {str(d.date()): round(float(v), 4)
+                                       for d, v in divs.tail(5).items()}
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
+def _bundle_analyst(info: dict) -> dict:
+    return {
+        "recommendation":     info.get("recommendationKey"),
+        "analysts":           info.get("numberOfAnalystOpinions"),
+        "target_mean":        info.get("targetMeanPrice"),
+        "target_low":         info.get("targetLowPrice"),
+        "target_high":        info.get("targetHighPrice"),
+    }
+
+
+def _bundle_news(ticker, limit: int = 5) -> list:
+    try:
+        raw = ticker.news or []
+    except Exception as e:
+        return [{"error": str(e)}]
+    items = []
+    for n in raw[:limit]:
+        content = n.get("content", n)  # newer yfinance wraps under "content"
+        title = content.get("title") or n.get("title", "")
+        link  = (content.get("canonicalUrl") or {}).get("url") or n.get("link", "")
+        pub   = content.get("pubDate") or n.get("providerPublishTime", "")
+        if title:
+            items.append({"title": title, "url": link, "published": str(pub)})
+    return items
+
+
+def _bundle_technicals(ticker) -> dict:
+    """用 3 个月历史算简单技术指标 — 无需额外依赖。"""
+    try:
+        hist = ticker.history(period="3mo")
+        closes = hist["Close"].dropna()
+        volumes = hist["Volume"].dropna()
+        if len(closes) < 20:
+            return {"error": "not enough data"}
+
+        def _ma(n):
+            return round(float(closes.tail(n).mean()), 4) if len(closes) >= n else None
+
+        # RSI(14)
+        diff = closes.diff().dropna()
+        gains = diff.clip(lower=0).tail(14).mean()
+        losses = (-diff.clip(upper=0)).tail(14).mean()
+        rsi = 100 - 100 / (1 + gains / losses) if losses else 100.0
+
+        return {
+            "ma5":  _ma(5),
+            "ma20": _ma(20),
+            "ma50": _ma(50),
+            "rsi14":           round(float(rsi), 2),
+            "avg_volume_20d":  int(volumes.tail(20).mean()),
+            "last_close":      round(float(closes.iloc[-1]), 4),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _bundle_flow(sym: str) -> dict:
+    """A 股主力资金流向 + 近 5 条公告 — 需 akshare。"""
+    if not _is_a_share(sym):
+        return {"skipped": "not an A-share symbol (need .SS/.SZ/.BJ suffix)"}
+    try:
+        ak = __import__("akshare")
+    except ImportError:
+        return {"error": "pip install akshare"}
+
+    code = _a_share_code(sym)
+    # akshare 的市场代码需要 sh/sz/bj 小写
+    market = {"SS": "sh", "SZ": "sz", "BJ": "bj"}[sym.rsplit(".", 1)[1].upper()]
+    out = {}
+    try:
+        df = ak.stock_individual_fund_flow(stock=code, market=market)
+        if df is not None and not df.empty:
+            last = df.iloc[-1]
+            out["fund_flow_latest"] = {str(k): str(v) for k, v in last.items()}
+    except Exception as e:
+        out["fund_flow_error"] = str(e)
+    try:
+        # 个股公告（近 5 条）
+        news = ak.stock_news_em(symbol=code)
+        if news is not None and not news.empty:
+            out["recent_notices"] = [{"title": r["新闻标题"], "time": str(r["发布时间"])}
+                                     for _, r in news.head(5).iterrows()]
+    except Exception as e:
+        out["notices_error"] = str(e)
+    return out
+
+
+def _num(v):
+    """Convert pandas scalar to plain int/None for JSON output."""
+    try:
+        import math
+        if v is None:
+            return None
+        f = float(v)
+        return None if math.isnan(f) else int(f) if abs(f) > 1 else round(f, 4)
+    except Exception:
+        return None
+
+
+def detail_mode(symbols: list[str], include: set[str], output_json=False):
     yf = require("yfinance")
     results = {}
     for sym in symbols:
         ticker = yf.Ticker(sym)
         info   = ticker.info or {}
         hist   = ticker.history(period="5d")
-        results[sym] = {
+        entry = {
             "name":          info.get("longName") or info.get("shortName", sym),
             "currency":      info.get("currency", ""),
             "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
@@ -127,18 +291,78 @@ def detail_mode(symbols: list[str], output_json=False):
             "volume":        info.get("volume"),
             "recent_closes": [round(float(p), 4) for p in hist["Close"].dropna().tolist()[-5:]],
         }
+        if "financials" in include: entry["financials"] = _bundle_financials(ticker)
+        if "dividends"  in include: entry["dividends"]  = _bundle_dividends(ticker, info)
+        if "analyst"    in include: entry["analyst"]    = _bundle_analyst(info)
+        if "news"       in include: entry["news"]       = _bundle_news(ticker)
+        if "technicals" in include: entry["technicals"] = _bundle_technicals(ticker)
+        if "flow"       in include: entry["flow"]       = _bundle_flow(sym)
+        results[sym] = entry
 
     if output_json:
-        print(json.dumps(results, ensure_ascii=False, indent=2))
+        print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
         return
 
     for sym, d in results.items():
         print(f"\n[{sym}] {d['name']} ({d['currency']})")
-        print(f"  当前价:   {d['current_price']}")
-        print(f"  市值:     {d['market_cap']:,}" if d['market_cap'] else "  市值:     N/A")
-        print(f"  P/E:      {d['pe_ratio']}")
+        print(f"  当前价:    {d['current_price']}")
+        print(f"  市值:      {d['market_cap']:,}" if d['market_cap'] else "  市值:      N/A")
+        print(f"  P/E:       {d['pe_ratio']}")
         print(f"  52周高/低: {d['52w_high']} / {d['52w_low']}")
         print(f"  近5日收盘: {d['recent_closes']}")
+
+        if "analyst" in d:
+            a = d["analyst"]
+            print(f"\n  ── 分析师 ──")
+            print(f"  评级:      {a['recommendation']} ({a['analysts']} 位分析师)")
+            print(f"  目标价:    均 {a['target_mean']} | 区间 {a['target_low']} – {a['target_high']}")
+
+        if "dividends" in d:
+            dv = d["dividends"]
+            print(f"\n  ── 分红 ──")
+            print(f"  股息率:    {dv['dividend_yield']}")
+            print(f"  派息率:    {dv['payout_ratio']}")
+            if dv.get("recent_dividends"):
+                print(f"  近5次:     {dv['recent_dividends']}")
+
+        if "financials" in d:
+            f = d["financials"]
+            print(f"\n  ── 财务（季度） ──")
+            for k in ("revenue", "net_income", "operating_cash_flow"):
+                if k in f:
+                    print(f"  {k:20s} {f[k]}")
+
+        if "technicals" in d:
+            t = d["technicals"]
+            if "error" in t:
+                print(f"\n  ── 技术指标 ──  ERROR: {t['error']}")
+            else:
+                print(f"\n  ── 技术指标 ──")
+                print(f"  MA5/20/50: {t['ma5']} / {t['ma20']} / {t['ma50']}")
+                print(f"  RSI(14):   {t['rsi14']}")
+                print(f"  20日均量:  {t['avg_volume_20d']:,}")
+
+        if "flow" in d:
+            fl = d["flow"]
+            print(f"\n  ── A股资金流向 / 公告 ──")
+            if "skipped" in fl:
+                print(f"  跳过: {fl['skipped']}")
+            else:
+                if "fund_flow_latest" in fl:
+                    print(f"  最新资金流: {fl['fund_flow_latest']}")
+                if "recent_notices" in fl:
+                    print(f"  近期公告:")
+                    for n in fl["recent_notices"]:
+                        print(f"    - [{n['time']}] {n['title']}")
+
+        if "news" in d:
+            print(f"\n  ── 相关新闻 ──")
+            for n in d["news"]:
+                if "error" in n:
+                    print(f"  ERROR: {n['error']}")
+                else:
+                    print(f"  • {n['title']}")
+                    if n.get("url"): print(f"    {n['url']}")
 
 
 # ── 宏观模式 ──────────────────────────────────────────────
@@ -233,6 +457,10 @@ def main():
                         help="运行模式（默认 snapshot）")
     parser.add_argument("--symbols", nargs="+", default=[],
                         help="detail 模式下指定 symbol，如 AAPL MSFT")
+    parser.add_argument("--include", default="",
+                        help=("detail 模式额外字段，逗号分隔；可选："
+                              + ", ".join(DETAIL_BUNDLES.keys())
+                              + "。或用 'all' 加载全部。"))
     parser.add_argument("--json", action="store_true",
                         help="以 JSON 格式输出")
     args = parser.parse_args()
@@ -243,7 +471,16 @@ def main():
         if not args.symbols:
             print("[ERROR] detail 模式需要 --symbols，例如：--symbols AAPL MSFT", file=sys.stderr)
             sys.exit(1)
-        detail_mode(args.symbols, args.json)
+        if args.include.strip().lower() == "all":
+            include = set(DETAIL_BUNDLES.keys())
+        else:
+            include = {x.strip() for x in args.include.split(",") if x.strip()}
+            unknown = include - set(DETAIL_BUNDLES)
+            if unknown:
+                print(f"[ERROR] 未知 --include 选项: {unknown}。可选: {list(DETAIL_BUNDLES)}",
+                      file=sys.stderr)
+                sys.exit(1)
+        detail_mode(args.symbols, include, args.json)
     elif args.mode == "macro":
         macro_mode(args.json)
     elif args.mode == "crypto":

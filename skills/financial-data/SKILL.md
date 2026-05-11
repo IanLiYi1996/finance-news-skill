@@ -1,6 +1,6 @@
 ---
 name: financial-data
-description: "Fetch live financial news and market data — global/China stocks, indices, ETFs, FX, commodities, crypto, macro indicators (CPI/PMI/GDP/rates) — and assemble market reports or daily digests. Use this skill proactively whenever the user asks about markets, prices, quotes, tickers, news headlines, or economic data, even if they don't explicitly request a 'report'. Triggers on phrases like 'get market data', 'show me today's market', 'fetch news', 'how is the S&P / 纳斯达克 / 恒生 / 比特币 doing', '看看行情', '今日要闻', '抓取财经新闻', '生成市场报告', '财联社', 'macro data', 'CPI', 'PMI', 'Fed', 'earnings'. Also use when the user mentions a ticker symbol (AAPL, NVDA, 00700.HK, 600519.SS) and wants a price or snapshot."
+description: "Fetch live financial news and market data — global/China stocks, indices, ETFs, FX, commodities, crypto, macro indicators (CPI/PMI/GDP/rates) — plus per-ticker deep data (financials, dividends, analyst ratings, related news, technicals, A-share fund flow). Use proactively whenever the user asks about markets, prices, quotes, tickers, news headlines, economic data, earnings, dividends, analyst targets, or fund flow. Triggers on phrases like 'get market data', 'show me today's market', 'fetch news', 'how is the S&P / 纳斯达克 / 恒生 / 比特币 doing', '看看行情', '今日要闻', '抓取财经新闻', '生成市场报告', '财联社', 'macro data', 'CPI', 'PMI', 'Fed', 'earnings', '股息率', '分析师目标价', '主力资金流向', '研报'. Also use when the user mentions a ticker (AAPL, NVDA, 00700.HK, 600519.SS) and wants price, fundamentals, news, or a full profile."
 ---
 
 # Financial Data Skill
@@ -13,6 +13,7 @@ Two scripts + two reference files. Covers news scraping and market-data fetching
 |-------------|-----|
 | 市场快照 / market snapshot / "how are markets doing" | `fetch_market.py` (default `snapshot` mode) |
 | 具体股票价格 / ticker details / P/E / 52-week range | `fetch_market.py --mode detail --symbols …` |
+| 财务报表 / 分红 / 分析师目标价 / 相关新闻 / 技术指标 / A股资金流 | 同上 + `--include …`（见下文） |
 | CPI / PMI / GDP / 利率 / macro indicators | `fetch_market.py --mode macro` |
 | 加密货币 / crypto / BTC / ETH | `fetch_market.py --mode crypto` |
 | 新闻 / headlines / 财经要闻 / 财联社 / WSJ / Bloomberg | `fetch_news.py` |
@@ -39,6 +40,22 @@ python3 scripts/fetch_news.py --sources intl --json
 
 Only needs Python standard library + `curl`. No pip install required.
 
+### `--include` bundles (detail mode)
+
+Use these when the user wants more than just price and market cap. Bundles combine cleanly — pass a comma-separated list.
+
+| Bundle | Contents | Needs |
+|--------|----------|-------|
+| `analyst` | Rating + number of analysts + mean / low / high target price | yfinance |
+| `dividends` | Dividend yield + payout ratio + last 5 dividend payments | yfinance |
+| `financials` | Quarterly revenue / net income / operating cash flow (last 2 quarters) | yfinance |
+| `news` | Last 5 ticker-specific news stories (title + URL) | yfinance |
+| `technicals` | MA5/20/50 + RSI(14) + 20-day avg volume | yfinance |
+| `flow` | Latest 主力/超大单/大单/中单/小单 net flow + recent notices | akshare; auto-skips non-A-share |
+| `all` | Everything above | both |
+
+Pick the smallest set that answers the user's question. Loading `all` on 10 symbols is slow — only do that when they explicitly want a deep dive.
+
 ### `scripts/fetch_market.py` — market data
 
 ```bash
@@ -47,6 +64,17 @@ python3 scripts/fetch_market.py
 
 # Specific tickers (yfinance)
 python3 scripts/fetch_market.py --mode detail --symbols AAPL MSFT NVDA
+
+# Deep per-ticker profile (pick the bundles you need)
+python3 scripts/fetch_market.py --mode detail --symbols AAPL \
+  --include analyst,technicals,news,dividends,financials
+
+# A-share fund flow (auto-detected by .SS/.SZ/.BJ suffix)
+python3 scripts/fetch_market.py --mode detail --symbols 600519.SS \
+  --include flow
+
+# Everything at once
+python3 scripts/fetch_market.py --mode detail --symbols NVDA --include all
 
 # China + US macro indicators (akshare)
 python3 scripts/fetch_market.py --mode macro
@@ -87,6 +115,19 @@ Open these when the user asks for a source, ticker, or API the scripts don't alr
 ```bash
 python3 scripts/fetch_market.py --mode detail \
   --symbols NVDA AMD INTC SOXX 688981.SS 00981.HK
+```
+
+### Deep dive on a single name
+"Tell me everything about NVDA" →
+```bash
+python3 scripts/fetch_market.py --mode detail --symbols NVDA --include all
+```
+The agent should then pick out the 3–5 most relevant facts (target price vs current, recent earnings trend, top news headline, technical posture) rather than dumping the raw output.
+
+### A-share with fund flow
+"看看贵州茅台的主力资金" →
+```bash
+python3 scripts/fetch_market.py --mode detail --symbols 600519.SS --include flow
 ```
 
 ### Real-time flash news (财联社)

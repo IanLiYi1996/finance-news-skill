@@ -8,6 +8,7 @@ Give your coding agent the ability to pull real market snapshots, headlines, and
 
 - 📈 **Market snapshots** — global indices, commodities, FX, ETFs (via `yfinance`)
 - 🔍 **Ticker details** — price / P/E / 52-week range / recent closes for any symbol
+- 🏢 **Per-stock deep data** — financial statements, dividends, analyst ratings & targets, related news, technical indicators (MA/RSI), A-share fund flow (opt-in via `--include`)
 - 🌏 **Macro indicators** — China & US CPI, PMI, GDP, rates (via `akshare`)
 - ₿ **Crypto** — BTC / ETH / SOL / BNB / XRP + Fear & Greed index (CoinGecko, no key)
 - 📰 **News feeds** — WSJ, FT, Bloomberg, Reuters, 财联社, 新浪财经, 澎湃, 36氪, CoinDesk, TechCrunch, and more
@@ -54,9 +55,11 @@ The agent will typically install these for you the first time you trigger a rele
 
 Once installed, just talk to your agent naturally:
 
-- *"看看今天的市场"* → the skill triggers, runs `fetch_market.py`, summarizes movers
+- *"看看今天的市场"* → runs `fetch_market.py`, summarizes movers
 - *"Give me today's top financial headlines"* → runs `fetch_news.py`, groups by region
 - *"How's NVDA looking?"* → runs `fetch_market.py --mode detail --symbols NVDA`
+- *"Tell me everything about Apple — fundamentals, analyst view, recent news"* → `--mode detail --symbols AAPL --include all`
+- *"茅台最近主力资金怎么样？"* → `--mode detail --symbols 600519.SS --include flow`
 - *"生成一份市场日报发到 Slack"* → runs both scripts, assembles a digest
 
 Or invoke the scripts directly:
@@ -67,6 +70,14 @@ python3 skills/financial-data/scripts/fetch_market.py
 
 # Chinese financial news, JSON
 python3 skills/financial-data/scripts/fetch_news.py --sources cn --json
+
+# Per-stock deep profile
+python3 skills/financial-data/scripts/fetch_market.py --mode detail \
+  --symbols AAPL --include analyst,dividends,financials,news,technicals
+
+# A-share fund flow
+python3 skills/financial-data/scripts/fetch_market.py --mode detail \
+  --symbols 600519.SS --include flow
 
 # China + US macro dashboard
 python3 skills/financial-data/scripts/fetch_market.py --mode macro
