@@ -1,6 +1,6 @@
 ---
 name: financial-data
-description: "Fetch live financial news and market data — global/China stocks, indices, ETFs, FX, commodities, crypto, macro indicators (CPI/PMI/GDP/rates) — plus per-ticker deep data (financials, dividends, analyst ratings, related news, technicals, A-share fund flow). Use proactively whenever the user asks about markets, prices, quotes, tickers, news headlines, economic data, earnings, dividends, analyst targets, or fund flow. Triggers on phrases like 'get market data', 'show me today's market', 'fetch news', 'how is the S&P / 纳斯达克 / 恒生 / 比特币 doing', '看看行情', '今日要闻', '抓取财经新闻', '生成市场报告', '财联社', 'macro data', 'CPI', 'PMI', 'Fed', 'earnings', '股息率', '分析师目标价', '主力资金流向', '研报'. Also use when the user mentions a ticker (AAPL, NVDA, 00700.HK, 600519.SS) and wants price, fundamentals, news, or a full profile."
+description: "Fetch live financial news and market data — global/China stocks, indices, ETFs, FX, commodities, crypto, macro indicators (CPI/PMI/GDP/rates) — plus per-ticker deep data (financials, dividends, analyst ratings, related news, technicals, A-share fund flow). When news is involved, performs cross-source verification and visibly flags single-source / unconfirmed items. Use proactively whenever the user asks about markets, prices, quotes, tickers, news headlines, economic data, earnings, dividends, analyst targets, or fund flow. Triggers on phrases like 'get market data', 'show me today's market', 'fetch news', 'how is the S&P / 纳斯达克 / 恒生 / 比特币 doing', '看看行情', '今日要闻', '抓取财经新闻', '生成市场报告', '财联社', 'macro data', 'CPI', 'PMI', 'Fed', 'earnings', '股息率', '分析师目标价', '主力资金流向', '研报'. Also use when the user mentions a ticker (AAPL, NVDA, 00700.HK, 600519.SS) and wants price, fundamentals, news, or a full profile."
 ---
 
 # Financial Data Skill
@@ -144,3 +144,38 @@ Don't try to improvise — open the relevant reference file, copy the snippet, a
 - `--json`: structured data for downstream processing (charts, reports, Slack blocks).
 
 When the user asks for a "report" or "digest", prefer the human-readable format, then add light markdown formatting (headings, tables). When piping into another tool, use `--json`.
+
+## News cross-source verification (MUST follow)
+
+Before returning any news story to the user — headline, quoted claim, or "breaking" item — check whether it is corroborated by at least one **other independent source** in the same run's output.
+
+**Why this matters:** A single-source story can be a rumor, a translation artifact, an outlier take, or in the worst case plain wrong. Users making trading or business decisions need to know which claims are confirmed vs. which are isolated. Silently mixing the two erodes trust and creates real downside risk.
+
+**How to apply:**
+
+1. **After `fetch_news.py` returns,** group items by topic/event, not by source. Two sources reporting the same event (same company, same action, same rough timeframe) counts as corroboration — even if the exact wording differs. Paraphrases and translations of the same Reuters wire *do* count as corroboration; the same outlet posting twice does not.
+
+2. **Tag each item you surface to the user:**
+   - **Corroborated** (≥2 independent sources): present normally, optionally list sources inline, e.g. *"WTI jumped 4% on Trump rejecting Iran peace offer (FT, CNBC, MarketWatch)"*
+   - **Single-source** (only 1 source in the batch): add a visible marker — use **⚠️ single source** inline, or a dedicated *Unconfirmed* subsection at the end. Name the sole source explicitly so the user can judge its reliability, e.g. *"⚠️ Single source (Benzinga): Company X mulling $2B buyback — not yet picked up by other wires."*
+
+3. **Independent ≠ same publisher.** Reuters and FT are independent; FT and FT-China translating the same piece are not. Yahoo-syndicated stories inherit their original source — treat `yfinance.news` items by their `publisher` field, not by Yahoo.
+
+4. **Don't drop the single-source items.** Users still want to see them — the rule is to *flag*, not to *hide*. An exclusive scoop from one credible outlet can be the most valuable item in the batch, as long as the user knows it's unconfirmed.
+
+5. **Edge cases:**
+   - Only 1 source returned data this run (e.g. user ran `--sources cn --limit 3`): note at the top that cross-source verification is limited and most items will be single-source by construction.
+   - The user explicitly asked for one outlet ("show me 财联社 today"): the rule doesn't apply — they know what they're getting.
+   - Breaking news within the last 30 minutes often shows on only one source first; flag as single-source but mention the recency, e.g. *"⚠️ Just-in, single source (财联社): ..."*.
+
+**Example output shape:**
+
+```markdown
+## Top stories (corroborated)
+- **Iran rejects peace offer; oil +4%** — FT, CNBC, MarketWatch
+- **Trump–Xi summit Wednesday** — FT, CNBC
+
+## Unconfirmed / single source
+- ⚠️ **Benzinga only:** ACME Corp reportedly in talks for $2B debt raise
+- ⚠️ **财联社 only:** 监管层拟放宽 REITs 扩募规则（时效 <30 分钟）
+```
