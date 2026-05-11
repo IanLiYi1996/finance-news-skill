@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.Python
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Agent skill caches
+.claude/
+.cursor/
+.agents/
+
+# Node (in case someone vendored something)
+node_modules/
+
+# Local test artifacts
+*.log
