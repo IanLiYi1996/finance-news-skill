@@ -86,7 +86,7 @@ for item in json.loads(data)['result']['data']:
 | 澎湃新闻 | `https://feedx.net/rss/thepaper.xml` | RSS ✅ |
 | 36氪 | `https://36kr.com/feed` | RSS |
 | FeedX 华尔街日报中文 | `https://feedx.net/rss/wsj.xml` | RSS |
-| FeedX 金融时报中文 | `https://feedx.net/rss/ftchinese.xml` | RSS |
+| FT 中文（官方） | `https://www.ftchinese.com/rss/feed` | RSS ✅ |
 
 ## 网页抓取源（用 web_fetch）
 

@@ -29,7 +29,7 @@ RSS_SOURCES = {
     ],
     "cn": [
         ("澎湃新闻",        "https://feedx.net/rss/thepaper.xml"),
-        ("FT中文",          "https://feedx.net/rss/ftchinese.xml"),
+        ("FT中文",          "https://www.ftchinese.com/rss/feed"),
         ("36氪",            "https://36kr.com/feed"),
     ],
     "crypto": [
